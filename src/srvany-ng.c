@@ -31,7 +31,20 @@
 SERVICE_STATUS_HANDLE g_StatusHandle     = NULL;
 HANDLE                g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 PROCESS_INFORMATION   g_Process          = { 0 };
+BOOL                  g_checkApplicationExitCode = FALSE;
+DWORD                 g_applicationNormalExitCode = 0;
+DWORD                 g_failIfAppExits = 0;
 
+static const int APP_FAILED = 1;
+static const int APP_EXITED = 2;
+
+VOID CheckApplicationExitCode()
+{
+    // Check exit code of the application
+    DWORD processExitCode = 0;
+    if (!GetExitCodeProcess(g_Process.hProcess, &processExitCode) || processExitCode != g_applicationNormalExitCode)
+        exit(APP_FAILED); // if it was not a normal exit code, terminate the srvany-ng process and let the services watchdog restart it if so defined
+}
 
 /*
  * Worker thread for the service. Keeps the service alive until stopped,
@@ -46,6 +59,12 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
         //Check if the target application has exited.
         if (WaitForSingleObject(g_Process.hProcess, 0) == WAIT_OBJECT_0)
         {
+            if (g_failIfAppExits)
+                exit(APP_EXITED);
+
+            if (g_checkApplicationExitCode)
+                CheckApplicationExitCode();
+
             //...If it has, end this thread, resulting in a service stop.
             SetEvent(g_ServiceStopEvent);
         }
@@ -195,6 +214,20 @@ void WINAPI ServiceMain(DWORD argc, TCHAR *argv[])
         {
             applicationDirectory = NULL; //All attempts failed, let CreateProcess() handle it.
         }
+    }
+
+    // Get the normal exit code for application that would mean it has finished and not crashed or failed
+    cbData = sizeof(g_applicationNormalExitCode);
+    if (RegQueryValueEx(openedKey, TEXT("AppExitCode"), NULL, NULL, (LPBYTE)&g_applicationNormalExitCode, &cbData) == ERROR_SUCCESS)
+    {
+        g_checkApplicationExitCode = TRUE;
+    }
+
+    // Get the flag to treat any application exit as a failure 
+    cbData = sizeof(g_failIfAppExits);
+    if (RegQueryValueEx(openedKey, TEXT("AppRunsForever"), NULL, NULL, (LPBYTE)&g_failIfAppExits, &cbData) != ERROR_SUCCESS)
+    {
+        g_failIfAppExits = FALSE;
     }
 
     STARTUPINFO startupInfo;
